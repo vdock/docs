@@ -1,0 +1,41 @@
+#cloud-config
+# Create vdock user, and /vdock directory.
+users:
+  - name: vdock
+    groups: sudo, www-data, docker
+    ssh-authorized-keys:
+      - {{key}}
+    homedir: /vdock
+    shell: /bin/bash
+    primary_group: vdock
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+# Notify https://api.vdock.io/parser/nginx on nginx restart (to setup domain) and create default SSL certificate.
+write_files:
+  - content: |
+      #!/bin/bash
+      set -e
+      name=${CONTAINER_NAME:-dinghy_http_proxy}
+      /app/join-networks -container-name $namex
+      curl -F "config=@/etc/nginx/conf.d/default.conf" https://api.vdock.io/parser/nginx
+      nginx -s reload
+    permissions: '777'
+    path: /bin/reload-nginx
+  - content: |
+      #!/bin/bash
+      openssl req -x509 -newkey rsa:2048 -keyout /vdock/.dinghy/certs/virtual-host.dev.key -out /vdock/.dinghy/certs/virtual-host.dev.crt -days 365 -nodes -subj "/C=US/ST=Oregon/L=Portland/O=Company Name/OU=Org/CN=virtual-host.dev" -config <(cat /etc/ssl/openssl.cnf <(echo "[SAN]" ; printf "subjectAltName=DNS:virtual-host.dev")) -reqexts SAN -extensions SAN
+    permissions: '777'
+    path: /bin/self-sign-certificate
+# Allow multiple ssh connections.
+# Setup certificates.
+# Run Dinghy HTTP Proxy.
+runcmd:
+    - sudo ufw allow 22/tcp
+    - rm -rf /etc/update-motd.d/99-one-click
+    - mkdir -p /vdock/.dinghy/certs/
+    - openssl rand -out /root/.rnd -writerand /root/.rnd
+    - /bin/self-sign-certificate virtual-host.dev
+    - chown -R vdock /vdock
+    - chgrp -R vdock /vdock
+    - docker run -d --restart=always -v /bin/reload-nginx:/app/reload-nginx:ro -v /var/run/docker.sock:/tmp/docker.sock:ro -v /vdock/.dinghy/certs:/etc/nginx/certs -p 80:80 -p 443:443 -e DOMAIN_TLD=virtual-host.dev -e CONTAINER_NAME=http-proxy --name http-proxy codekitchen/dinghy-http-proxy
+    - echo "MaxSessions 100" >> /etc/ssh/sshd_config
+    - sudo systemctl reload sshd
